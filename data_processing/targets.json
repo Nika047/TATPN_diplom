@@ -1,0 +1,143 @@
+{
+    "description": "База целей: объекты инфраструктуры СПб и Ленинградской области",
+    "enu_origin": {
+        "lat": 59.045,
+        "lon": 29.093,
+        "alt": 0.0,
+        "description": "Опорная точка ENU (центр зоны полётов, Гатчина/Коммунар)"
+    },
+    "target_types": [
+        "airport",
+        "nuclear_plant",
+        "refinery",
+        "power_plant",
+        "military_base",
+        "port",
+        "oil_terminal",
+        "city_center",
+        "city",
+        "transport_hub"
+    ],
+    "targets": [
+        {
+            "id": "T01",
+            "name": "Аэропорт Пулково",
+            "type": "airport",
+            "lat": 59.7986,
+            "lon": 30.2575,
+            "source": "Wikipedia, dateandtime.info"
+        },
+        {
+            "id": "T02",
+            "name": "ЛАЭС (Сосновый Бор)",
+            "type": "nuclear_plant",
+            "lat": 59.8434,
+            "lon": 29.0363,
+            "source": "Wikipedia"
+        },
+        {
+            "id": "T03",
+            "name": "Киришский НПЗ (КИНЕФ)",
+            "type": "refinery",
+            "lat": 59.4847,
+            "lon": 32.0542,
+            "source": "Global Energy Monitor, Wikipedia"
+        },
+        {
+            "id": "T04",
+            "name": "Северная ТЭЦ-21",
+            "type": "power_plant",
+            "lat": 60.0758,
+            "lon": 30.4744,
+            "source": "Wikipedia, Wikimapia, energybase.ru"
+        },
+        {
+            "id": "T05",
+            "name": "Южная ТЭЦ-22",
+            "type": "power_plant",
+            "lat": 59.8276,
+            "lon": 30.4512,
+            "source": "Wikipedia, energybase.ru"
+        },
+        {
+            "id": "T06",
+            "name": "Правобережная ТЭЦ",
+            "type": "power_plant",
+            "lat": 59.8670,
+            "lon": 30.4850,
+            "source": "Wikipedia"
+        },
+        {
+            "id": "T07",
+            "name": "Автовская ТЭЦ",
+            "type": "power_plant",
+            "lat": 59.8750,
+            "lon": 30.2700,
+            "source": "Wikipedia"
+        },
+        {
+            "id": "T08",
+            "name": "ВМБ Кронштадт",
+            "type": "military_base",
+            "lat": 59.9959,
+            "lon": 29.7656,
+            "source": "Wikipedia, dateandtime.info"
+        },
+        {
+            "id": "T09",
+            "name": "Порт Усть-Луга",
+            "type": "port",
+            "lat": 59.7119,
+            "lon": 28.3969,
+            "source": "Wikipedia, pasp.ru"
+        },
+        {
+            "id": "T10",
+            "name": "Приморский нефтяной терминал",
+            "type": "oil_terminal",
+            "lat": 60.3375,
+            "lon": 28.7167,
+            "source": "pasp.ru, Wikipedia"
+        },
+        {
+            "id": "T11",
+            "name": "Большой порт СПб",
+            "type": "port",
+            "lat": 59.9250,
+            "lon": 30.2500,
+            "source": "Wikipedia"
+        },
+        {
+            "id": "T12",
+            "name": "Центр Санкт-Петербурга",
+            "type": "city_center",
+            "lat": 59.9343,
+            "lon": 30.3351,
+            "source": "dateandtime.info"
+        },
+        {
+            "id": "T13",
+            "name": "Гатчина",
+            "type": "city",
+            "lat": 59.5764,
+            "lon": 30.1286,
+            "source": "dateandtime.info"
+        },
+        {
+            "id": "T14",
+            "name": "Московский вокзал СПб",
+            "type": "transport_hub",
+            "lat": 59.9299,
+            "lon": 30.3618,
+            "source": "OpenStreetMap"
+        },
+        {
+            "id": "T15",
+            "name": "Ладожский вокзал",
+            "type": "transport_hub",
+            "lat": 59.9320,
+            "lon": 30.4400,
+            "source": "OpenStreetMap"
+        }
+    ]
+}
