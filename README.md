@@ -133,6 +133,15 @@ python run_stage5.py
 python run_stage6.py
 ```
 
+Весь цикл (этапы 0-6, все эпохи, с замером времени) одной командой:
+
+```bash
+python run_all.py
+```
+
+Итог - в `logs/run_all/summary.txt`. Прикидку времени без обучения даёт
+`python benchmark_gpu.py`.
+
 **Важно про сравнимость метрик.** При наличии CUDA `config.py` автоматически
 включает полный профиль, а `run_stage3/4/5` - свои GPU-настройки:
 
