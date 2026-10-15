@@ -43,6 +43,7 @@ from data.windowing import WindowedDataset
 from data.torch_dataset import TorchWindowed
 from models.cnn_mamba_target import ConvMambaTarget
 from training.losses import masked_huber_traj
+from training.gpu_tuning import setup_cuda, tune_batch
 from eval.metrics import trajectory_metrics, target_classification_metrics
 from eval.logging_utils import (Tee, format_metrics_table, save_json, save_summary)
 from baselines import constant_position, linear_velocity
@@ -60,7 +61,7 @@ TRAJ_DEGRADE_TOL = 1.20                        # ADE не должен выра�
 
 if str(config.DEVICE) == "cuda":
     SEQ_LEN, BATCH, MAX_EPOCHS, EARLY_STOP_PATIENCE, LR, OVERFIT_STEPS = \
-        192, 64, 60, 8, 1e-3, 300
+        192, 64, 100, 12, 1e-3, 300   # BATCH - стартовое, реальное подбирается по VRAM
 else:
     SEQ_LEN, BATCH, MAX_EPOCHS, EARLY_STOP_PATIENCE, LR, OVERFIT_STEPS = \
         48, 8, 12, 6, 1e-3, 400
@@ -206,7 +207,15 @@ def load_stage3_ade():
 # main
 # ============================================================================
 
+def _probe_step(model, batch, device):
+    """Один шаг для подбора батча под видеопамять: возвращает loss."""
+    out = _forward4(model, batch, device)
+    loss, _, _ = multitask_loss(out, batch, device)
+    return loss
+
+
 def main():
+    global BATCH
     config.ensure_dirs()
     torch.manual_seed(config.RANDOM_SEED)
     np.random.seed(config.RANDOM_SEED)
@@ -217,6 +226,7 @@ def main():
     device = config.DEVICE
 
     try:
+        setup_cuda(device)
         print("=" * 70)
         print("  Этап 4 - CNN + Mamba + Target Head (классификация цели)")
         print("=" * 70)
@@ -238,6 +248,11 @@ def main():
 
         H = config.PRED_HORIZON
         build_model = lambda: ConvMambaTarget(target_coords=target_coords)
+
+        # --- GPU: размер батча под видеопамять (на CPU ничего не меняет) ---
+        BATCH, train_loader, val_loader, test_loader = tune_batch(
+            build_model, _probe_step, train_loader, val_loader, test_loader,
+            device, default_batch=BATCH)
 
         # --- overfit ---
         overfit = overfit4(build_model, train_loader, device, OVERFIT_STEPS)

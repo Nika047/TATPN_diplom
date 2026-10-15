@@ -105,8 +105,16 @@
   Актуальную команду взять на https://pytorch.org/get-started/locally/
   (выбрать свою ОС, пакетный менеджер pip и версию CUDA).
 
-  Пример для CUDA 12.1:
-    pip install torch --index-url https://download.pytorch.org/whl/cu121
+  Для видеокарт серии RTX 50 (архитектура Blackwell, например 5070 Ti)
+  нужна сборка под CUDA 12.8 или новее. Сборки под CUDA 12.1 такие карты
+  не поддерживают: torch.cuda.is_available() может вернуть True, а
+  вычисления упадут с ошибкой "no kernel image is available". Для CUDA 12.8
+  нужен достаточно свежий драйвер NVIDIA (серия 570 и новее).
+
+    pip install torch --index-url https://download.pytorch.org/whl/cu128
+
+  Если torch уже стоит с другой версией CUDA, сначала удалить:
+    pip uninstall -y torch
 
 ШАГ 2.4. Установить остальные зависимости
 
@@ -117,7 +125,16 @@
     python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 
   Должно напечатать True и название видеокарты, например:
-    True NVIDIA GeForce RTX 3060
+    True NVIDIA GeForce RTX 5070 Ti
+
+  Одной проверки is_available() мало: на неподдерживаемой архитектуре она
+  проходит, а вычисления падают. Проверить реальную операцию на видеокарте:
+
+    python -c "import torch; x = torch.randn(512, 512, device='cuda'); print((x @ x).sum().item(), torch.cuda.get_device_capability(0))"
+
+  Должно напечатать число и пару вида (12, 0) без ошибок. Ошибка
+  "no kernel image is available for execution on the device" означает,
+  что сборка torch не поддерживает эту видеокарту - см. шаг 2.3.
 
   Если напечатало False - значит стоит сборка PyTorch без CUDA или проблема
   с драйвером. Запускать этапы в этом случае НЕ ИМЕЕТ СМЫСЛА: всё посчитается
@@ -277,8 +294,8 @@ run_stage3/4/5 используют свои GPU-настройки:
   MAX_SEQ_LEN                   192             512
   Окно наблюдения этапов 3-5    48              192
   Mamba                         2 x 128         4 x 256
-  Batch (этапы 3-5)             8               64
-  Эпохи (этапы 3-5)             12              60
+  Batch (этапы 3-5)             8               подбирается по VRAM (до 128)
+  Эпохи (этапы 3-5), максимум   12              100 (ранняя остановка)
 
 ADE на горизонте 50 шагов принципиально несравним с ADE на горизонте 30.
 Плюс сам датасет изменился после устранения дубликатов. Поэтому:
@@ -353,7 +370,7 @@ ADE на горизонте 50 шагов принципиально несра�
     cd TATPN_diplom
     python -m venv .venv
     .venv\Scripts\activate
-    pip install torch --index-url https://download.pytorch.org/whl/cu121
+    pip install torch --index-url https://download.pytorch.org/whl/cu128
     pip install -r requirements.txt
     python -c "import torch; print(torch.cuda.is_available())"     # True
 
@@ -458,7 +475,7 @@ SSH, только вместо 192.168.x.x используется этот а�
     cd TATPN_diplom
     python -m venv .venv
     .venv\Scripts\activate
-    pip install torch --index-url https://download.pytorch.org/whl/cu121
+    pip install torch --index-url https://download.pytorch.org/whl/cu128
     pip install -r requirements.txt
     python -c "import torch; print(torch.cuda.is_available())"
 

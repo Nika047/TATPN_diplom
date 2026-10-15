@@ -41,7 +41,9 @@ from models.cnn_mamba import ConvMambaTrajectory
 from eval.metrics import trajectory_metrics
 from eval.logging_utils import (Tee, format_metrics_table, save_json, save_summary)
 from run_stage2 import (load_split, run_epoch, overfit_one_batch, eval_baselines,
-                        _forward, _save_examples, HAS_TQDM)
+                        _forward, _save_examples, HAS_TQDM, LOSS_SCALE)
+from training.losses import masked_huber_traj
+from training.gpu_tuning import setup_cuda, tune_batch
 
 STAGE = "stage3_cnn_mamba"
 LEARN_IMPROVE_RATIO = 0.8
@@ -54,9 +56,9 @@ LEARN_IMPROVE_RATIO = 0.8
 # много эпох (для Colab).
 if str(config.DEVICE) == "cuda":
     SEQ_LEN = 192
-    BATCH = 64
-    MAX_EPOCHS = 60
-    EARLY_STOP_PATIENCE = 8
+    BATCH = 64                 # стартовое значение; реальное подбирается по VRAM
+    MAX_EPOCHS = 100
+    EARLY_STOP_PATIENCE = 12
     LR = 1e-3
     OVERFIT_STEPS = 300
 else:  # cpu
@@ -109,7 +111,15 @@ def load_stage2_cnn_ade():
         return None
 
 
+def _probe_step(model, batch, device):
+    """Один шаг для подбора батча под видеопамять: возвращает loss."""
+    pred = _forward(model, batch, device)
+    return masked_huber_traj(pred, batch["future_points"].to(device),
+                             batch["future_mask"].to(device), scale=LOSS_SCALE)
+
+
 def main():
+    global BATCH
     config.ensure_dirs()
     torch.manual_seed(config.RANDOM_SEED)
     np.random.seed(config.RANDOM_SEED)
@@ -121,13 +131,15 @@ def main():
     device = config.DEVICE
 
     try:
+        setup_cuda(device)
         print("=" * 70)
         print("  Этап 3 - CNN + Mamba энкодер (только координаты)")
         print("=" * 70)
         print(f"  Время старта: {ts}")
         print(f"  Device:       {device}")
-        print(f"  Окно L={SEQ_LEN} (укорочено для CPU), H={config.PRED_HORIZON}, "
-              f"Batch={BATCH}")
+        print(f"  Окно L={SEQ_LEN}"
+              f"{' (укорочено для CPU)' if str(device) == 'cpu' else ''}, "
+              f"H={config.PRED_HORIZON}, Batch={BATCH}")
         print(f"  Mamba: {config.MAMBA_NUM_LAYERS} слоёв, d_model={config.MAMBA_D_MODEL}, "
               f"d_state={config.MAMBA_D_STATE}")
         print(f"  Epochs<={MAX_EPOCHS} (ранняя остановка, patience={EARLY_STOP_PATIENCE}), "
@@ -142,6 +154,11 @@ def main():
 
         H = config.PRED_HORIZON
         build_model = lambda: ConvMambaTrajectory()
+
+        # --- GPU: размер батча под видеопамять (на CPU ничего не меняет) ---
+        BATCH, train_loader, val_loader, test_loader = tune_batch(
+            build_model, _probe_step, train_loader, val_loader, test_loader,
+            device, default_batch=BATCH)
 
         # --- overfit-one-batch ---
         overfit = overfit_one_batch(build_model, train_loader, device,

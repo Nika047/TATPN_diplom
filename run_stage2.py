@@ -44,6 +44,7 @@ from data.windowing import WindowedDataset
 from data.torch_dataset import TorchWindowed
 from models.cnn_baseline import ConvTrajectoryNet
 from training.losses import masked_huber_traj
+from training.gpu_tuning import setup_cuda
 from eval.metrics import trajectory_metrics
 from eval.logging_utils import Tee, format_metrics_table, save_json, save_summary
 from baselines import constant_position, linear_velocity
@@ -58,6 +59,10 @@ LOSS_SCALE = 100.0
 # NUM_EPOCHS=5: учим дольше с ранней остановкой по val ADE.
 MAX_EPOCHS = 40
 EARLY_STOP_PATIENCE = 8
+if str(config.DEVICE) == "cuda":
+    # На GPU эпоха CNN занимает секунды - можно учить дольше.
+    MAX_EPOCHS = 100
+    EARLY_STOP_PATIENCE = 12
 # Порог "модель реально обучилась": лучший val ADE ниже стартового на >=20%.
 LEARN_IMPROVE_RATIO = 0.8
 
@@ -267,6 +272,7 @@ def main():
     device = config.DEVICE
 
     try:
+        setup_cuda(device)
         print("=" * 70)
         print("  Этап 2 - CNN baseline (только координаты)")
         print("=" * 70)
