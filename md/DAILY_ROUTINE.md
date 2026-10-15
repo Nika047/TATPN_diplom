@@ -6,6 +6,111 @@
 | Пользователь | `kirill` |
 | Проект на домашнем ПК | `C:\Users\kirill\Desktop\TATPN_diplom` |
 
+## Остановить и перезапустить с обновлённым кодом
+
+Все команды - в PowerShell на домашнем ПК, в папке проекта (после входа по ssh
+сначала `powershell`, затем `cd C:\Users\kirill\Desktop\TATPN_diplom`).
+
+**1. Остановить цикл вместе с этапом** (нужно убить дерево процессов, иначе
+`run_all` запустит следующий этап):
+
+```powershell
+Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -match 'run_all\.py|run_stage\d\.py' } | ForEach-Object { taskkill /F /T /PID $_.ProcessId }
+```
+
+Проверка (вывод должен быть пустым; если процесс виден - повторить команду):
+
+```powershell
+Get-Process python -ErrorAction SilentlyContinue
+```
+
+**2. Получить исправления:**
+
+```powershell
+git pull
+```
+
+**3. Очистить старые результаты** (чтобы новые сводки не смешивались со старыми;
+исходные данные и логи запусков не затрагиваются):
+
+```powershell
+Remove-Item -Recurse -Force -ErrorAction SilentlyContinue processed_data, logs\stage1_baselines, logs\stage2_cnn, logs\stage3_cnn_mamba, logs\stage4_target, logs\stage5_tatpn, logs\run_all, artifacts\stage2, artifacts\stage3, artifacts\stage4, artifacts\stage5, reports\stage6, run_all.out
+```
+
+**4. Первый прогон - по одному этапу с проверкой сводки** (этапы 0-2 занимают
+секунды-минуты). После каждого смотреть сводку и идти дальше, только если нет
+`FAIL`:
+
+```powershell
+.venv\Scripts\python.exe run_stage0.py
+```
+
+```powershell
+.venv\Scripts\python.exe run_stage1.py
+Get-Content logs\stage1_baselines\summary.txt -Encoding UTF8
+```
+
+```powershell
+.venv\Scripts\python.exe run_stage2.py
+Get-Content logs\stage2_cnn\summary.txt -Encoding UTF8
+```
+
+**5. Замерить скорость на исправленном скане** (несколько минут, покажет время
+эпохи и подбор батча; по нему видно, сколько займут этапы 3-5):
+
+```powershell
+.venv\Scripts\python.exe benchmark_gpu.py
+```
+
+**6. Этапы 3-5 и 6 - в фоне, одной командой** (с этапа 3, с остановкой на первом
+этапе с непройденными проверками):
+
+```powershell
+$P = (Get-Location).Path
+Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "cmd /c `"cd /d $P && .venv\Scripts\python.exe -u run_all.py --from 3 --stop-on-fail > run_all.out 2>&1`"" }
+```
+
+Нужно `ReturnValue : 0`. После этого окно ssh можно закрыть.
+
+**Весь цикл с нуля одной командой** (когда этапы 0-2 уже проверены и доверие
+есть) - так же, но без `--from 3 --stop-on-fail`: `run_all.py`.
+
+### Следить без повторных запросов
+
+Живой поток журнала (строки приходят по мере выполнения, выход - `Ctrl+C`,
+цикл не затрагивается):
+
+```powershell
+Get-Content run_all.out -Wait -Tail 20 -Encoding UTF8
+```
+
+Сводка с автообновлением каждые 30 секунд до завершения цикла:
+
+```powershell
+.venv\Scripts\python.exe status.py --watch 30
+```
+
+С рабочего ПК без входа в сессию - разовый снимок (`--watch` по ssh без
+терминала не нужен):
+
+```text
+ssh kirill@26.244.190.10 "cd /d C:\Users\kirill\Desktop\TATPN_diplom && .venv\Scripts\python.exe status.py"
+```
+
+### Частые вопросы
+
+**По одному этапу или целиком?** Первый прогон после изменений кода - по одному
+(пункт 4): ошибка видна сразу и на нужном этапе, а этапы 0-2 дешёвые. Целиком
+(`run_all.py`) - когда всё проверено и нужен долгий прогон без присмотра.
+`run_all.py --from N` продолжает с этапа N, не повторяя предыдущие.
+
+**Не плодит ли повторный запуск новые данные?** Нет. Этап 0 детерминирован
+(`RANDOM_SEED`): два прогона дают побитово одинаковый датасет, и он
+перезаписывает тот же файл `processed_data/all_trajectories.npz`. Чекпоинты и
+сводки тоже перезаписываются. Накапливаются только журналы запусков в
+`logs/run_logs/` (по файлу на запуск этапа, небольшие) - их можно удалять.
+`--from 1` и выше этап 0 не повторяет.
+
 ## 1. На рабочем ПК (Windows 10)
 
 1. Запустить Radmin VPN, убедиться, что домашний ПК "в сети".

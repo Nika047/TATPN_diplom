@@ -152,7 +152,7 @@ Softplus, гарантирующим неотрицательность оцен
 | Cross-Attention        | heads = 4, d_attn = 256                                |
 | GRU Decoder            | hidden = 256, layers = 2, autoregressive PRED_HORIZON = 50 |
 | ETA Head               | MLP 512 → 64 → 1, Softplus                             |
-| **Всего параметров**   | **≈ 3,27 млн обучаемых параметров**                    |
+| **Всего параметров**   | **3 314 438 (≈ 3,31 млн) в текущей реализации, GPU-профиль** |
 
 ## 3. Функция потерь
 
