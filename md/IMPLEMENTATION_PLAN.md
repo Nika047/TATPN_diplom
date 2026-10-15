@@ -69,8 +69,8 @@
 > Результат: чистый датасет + генератор + аугментация + база целей.
 
 Реализовано в `run_stage0.py` и `data_processing/`. Итог:
-`processed_data/all_trajectories.npz` - 3707 траекторий (реальные 214,
-scale 200, stitch 150, warp 143, синтетические direct 1800 / evasion 600 /
+`processed_data/all_trajectories.npz` - 3597 траекторий (реальные 107,
+scale 200, stitch 150, warp 140, синтетические direct 1800 / evasion 600 /
 loitering 300 / deceptive 300), сбалансированы по 15 целям, без NaN,
 формат `(N, 4)` = (x, y, z, dt) в ENU-метрах; `normalizer.npz` - z-score
 по 15 признакам. Отчёт: `reports/stage0_data_report.html`.

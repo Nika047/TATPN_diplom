@@ -86,6 +86,14 @@ def main():
                     help="остановиться, если у этапа не пройдены проверки")
     args = ap.parse_args()
 
+    # Вывод самого run_all.py тоже в UTF-8. Без этого при перенаправлении в
+    # файл Python на Windows пишет в кодировке системы (cp1251), а дочерние
+    # этапы - в UTF-8, и в одном журнале перемешиваются две кодировки.
+    try:
+        sys.stdout.reconfigure(encoding="utf-8")
+    except Exception:
+        pass
+
     nums = [n for n in sorted(STAGES) if args.first <= n <= args.last]
     if not nums:
         print("Нечего запускать: проверьте --from и --to (0..6).")

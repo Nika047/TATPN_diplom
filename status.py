@@ -25,13 +25,28 @@ ROOT = os.path.dirname(os.path.abspath(__file__))
 MAX_READ = 20 * 1024 * 1024     # читаем не больше 20 МБ с конца журнала
 
 
-def read_tail(path, limit=MAX_READ):
+def read_segments(path, limit=MAX_READ):
+    """
+    Читает журнал с конца и возвращает непустые фрагменты (по \\r и \\n).
+
+    Кодировку определяем отдельно для каждого фрагмента: в одном файле могут
+    оказаться и UTF-8 (этапы), и cp1251 (сам run_all.py старых запусков, если
+    он писал в файл без явной кодировки).
+    """
     size = os.path.getsize(path)
     with open(path, "rb") as f:
         if size > limit:
             f.seek(size - limit)
         data = f.read()
-    return data.decode("utf-8", errors="replace")
+    segments = []
+    for part in re.split(rb"[\r\n]+", data):
+        if not part.strip():
+            continue
+        try:
+            segments.append(part.decode("utf-8"))
+        except UnicodeDecodeError:
+            segments.append(part.decode("cp1251", errors="replace"))
+    return segments
 
 
 def fmt_ago(sec):
@@ -99,7 +114,7 @@ def main():
         return 1
 
     mtime = os.path.getmtime(args.out)
-    segments = [s for s in re.split(r"[\r\n]+", read_tail(args.out)) if s.strip()]
+    segments = read_segments(args.out)
     text = "\n".join(segments)
 
     # --- старт цикла ---
