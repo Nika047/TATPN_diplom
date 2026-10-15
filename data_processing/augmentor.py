@@ -62,6 +62,21 @@ def _resample_aug_trajectory(traj: np.ndarray,
     return np.stack([new_x, new_y, new_z, new_t], axis=1).astype(np.float32)
 
 
+def _speeds_plausible(traj: np.ndarray) -> bool:
+    """
+    Проверка физической реалистичности: скорости шагов в разумных пределах.
+
+    Args:
+        traj: (N, 4) - [x, y, z, dt], после ресемплинга к шагу 1 с.
+    """
+    dt = np.maximum(np.diff(traj[:, 3]), 1e-6)
+    speed = np.linalg.norm(np.diff(traj[:, :3], axis=0), axis=1) / dt
+    if speed.size == 0:
+        return False
+    return bool(np.percentile(speed, 99) <= config.AUG_MAX_SPEED_P99
+                and speed.max() <= config.AUG_MAX_SPEED)
+
+
 class TrajectoryAugmentor:
     """
     Расширяет реальные траектории до боевого масштаба.
@@ -104,49 +119,63 @@ class TrajectoryAugmentor:
         n_stitch = int(total_count * 0.3)
         n_warp = total_count - n_scale - n_stitch
 
-        # Метод A: Scale & Translate
-        print(f"[Augmentor] Scale & Translate: {n_scale} траекторий...")
-        for i in range(n_scale):
+        def make_scale():
             src = real_trajectories[self.rng.randint(len(real_trajectories))]
             target_idx = self.rng.randint(self.target_db.num_targets)
             traj = self._scale_and_translate(src, target_idx)
-            if traj is not None:
-                results.append({
-                    "trajectory": traj,
-                    "target_id": target_idx,
-                    "augmentation_type": "scale",
-                })
+            return self._item(traj, target_idx, "scale")
 
-        # Метод B: Stitch
-        print(f"[Augmentor] Stitch: {n_stitch} траекторий...")
-        for i in range(n_stitch):
+        def make_stitch():
             n_segments = self.rng.randint(*config.STITCH_NUM_SEGMENTS)
             indices = self.rng.choice(len(real_trajectories), size=n_segments, replace=True)
             segments = [real_trajectories[idx] for idx in indices]
             target_idx = self.rng.randint(self.target_db.num_targets)
             traj = self._stitch(segments, target_idx)
-            if traj is not None:
-                results.append({
-                    "trajectory": traj,
-                    "target_id": target_idx,
-                    "augmentation_type": "stitch",
-                })
+            return self._item(traj, target_idx, "stitch")
 
-        # Метод C: Warp to Target
-        print(f"[Augmentor] Warp to Target: {n_warp} траекторий...")
-        for i in range(n_warp):
+        def make_warp():
             src = real_trajectories[self.rng.randint(len(real_trajectories))]
             target_idx = self.rng.randint(self.target_db.num_targets)
             traj = self._warp_to_target(src, target_idx)
-            if traj is not None:
-                results.append({
-                    "trajectory": traj,
-                    "target_id": target_idx,
-                    "augmentation_type": "warp",
-                })
+            return self._item(traj, target_idx, "warp")
+
+        for title, make, count in (("Scale & Translate", make_scale, n_scale),
+                                   ("Stitch", make_stitch, n_stitch),
+                                   ("Warp to Target", make_warp, n_warp)):
+            print(f"[Augmentor] {title}: {count} траекторий...")
+            made, tries = 0, 0
+            for _ in range(count):
+                item, used = self._draw_valid(make)
+                tries += used
+                if item is not None:
+                    results.append(item)
+                    made += 1
+            print(f"[Augmentor]   получено {made} из {count}; попыток "
+                  f"{tries} (отбраковано по скоростям или вырождению: {tries - made})")
 
         print(f"[Augmentor] Всего: {len(results)} расширенных траекторий")
         return results
+
+    @staticmethod
+    def _item(traj: Optional[np.ndarray], target_idx: int, kind: str) -> Optional[Dict]:
+        if traj is None:
+            return None
+        return {"trajectory": traj, "target_id": target_idx,
+                "augmentation_type": kind}
+
+    @staticmethod
+    def _draw_valid(make, max_tries: int = config.AUG_MAX_TRIES):
+        """
+        Повторяет генерацию, пока траектория не пройдёт проверку скоростей.
+
+        Returns:
+            (элемент или None, число потраченных попыток)
+        """
+        for attempt in range(1, max_tries + 1):
+            item = make()
+            if item is not None and _speeds_plausible(item["trajectory"]):
+                return item, attempt
+        return None, max_tries
 
     # ========================================================================
     # Метод A: Scale & Translate
@@ -322,6 +351,19 @@ class TrajectoryAugmentor:
         if len(trajectory) < config.MIN_TRAJECTORY_POINTS:
             return None
 
+        # Время - по фактической длине пути (см. _warp_to_target). Пространство
+        # растянуто до десятков километров, а исходные интервалы времени
+        # остались прежними (сотни секунд): скорости выходили за сотни и тысячи
+        # м/с. Масштабируем ось времени целиком, сохраняя профиль скорости.
+        path_len = float(np.sum(np.hypot(np.diff(trajectory[:, 0]),
+                                         np.diff(trajectory[:, 1]))))
+        duration = float(trajectory[-1, 3] - trajectory[0, 3])
+        if path_len < 1.0 or duration <= 0.0:
+            return None
+        body_speed = self.rng.uniform(*config.AUG_SPEED_RANGE)    # м/с
+        trajectory[:, 3] = ((trajectory[:, 3] - trajectory[0, 3])
+                            * (path_len / body_speed / duration))
+
         # Ресемплинг к равномерному шагу 1 с (см. _resample_aug_trajectory).
         return _resample_aug_trajectory(trajectory)
 
@@ -411,12 +453,15 @@ class TrajectoryAugmentor:
         z_scale = self.rng.uniform(2, 5)
         z_new = np.clip(z * z_scale, 0, 3000)
 
-        # Масштабируем время пропорционально новой длине маршрута
-        # (исходная формула содержала лишние сокращающиеся множители).
-        # Базовая скорость ~30 м/с -> новая длительность = новая длина / 30.
-        new_path_len = route_len * approach_fraction
-        approach_speed_ref = 30.0  # м/с, типичная крейсерская скорость БПЛА
-        new_duration = new_path_len / approach_speed_ref
+        # Время задаём по ФАКТИЧЕСКОЙ длине пути, а не по прямой до цели.
+        # Исходная траектория часто кружит: длина её пути в десятки раз больше
+        # размаха, и расчёт по route_len / 30 давал скорости в сотни и тысячи
+        # м/с. Теперь средняя скорость на растянутом участке = body_speed.
+        path_len = float(np.sum(np.hypot(np.diff(x_new), np.diff(y_new))))
+        if path_len < 1.0:
+            return None
+        body_speed = self.rng.uniform(*config.AUG_SPEED_RANGE)    # м/с
+        new_duration = path_len / body_speed
         # Раскладываем равномерно по точкам исходной траектории
         n_pts = len(dt)
         dt_new = np.linspace(0.0, new_duration, n_pts, dtype=np.float32)

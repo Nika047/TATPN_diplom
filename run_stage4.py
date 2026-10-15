@@ -44,6 +44,7 @@ from data.torch_dataset import TorchWindowed
 from models.cnn_mamba_target import ConvMambaTarget
 from training.losses import masked_huber_traj
 from training.gpu_tuning import setup_cuda, tune_batch
+from training.diagnostics import overfit_check
 from eval.metrics import trajectory_metrics, target_classification_metrics
 from eval.logging_utils import (Tee, format_metrics_table, save_json, save_summary)
 from baselines import constant_position, linear_velocity
@@ -61,10 +62,10 @@ TRAJ_DEGRADE_TOL = 1.20                        # ADE не должен выра�
 
 if str(config.DEVICE) == "cuda":
     SEQ_LEN, BATCH, MAX_EPOCHS, EARLY_STOP_PATIENCE, LR, OVERFIT_STEPS = \
-        192, 64, 100, 12, 1e-3, 300   # BATCH - стартовое, реальное подбирается по VRAM
+        192, 64, 100, 12, 1e-3, 600   # BATCH - стартовое, реальное подбирается по VRAM
 else:
     SEQ_LEN, BATCH, MAX_EPOCHS, EARLY_STOP_PATIENCE, LR, OVERFIT_STEPS = \
-        48, 8, 12, 6, 1e-3, 400
+        48, 8, 12, 6, 1e-3, 600
 
 
 # ============================================================================
@@ -95,7 +96,7 @@ def multitask_loss(outputs, batch, device):
     l_traj = masked_huber_traj(outputs["pred_future"], target, fmask, scale=LOSS_SCALE)
     l_tgt = F.cross_entropy(outputs["target_logits"], tid)
     loss = config.LOSS_ALPHA * l_traj + config.LOSS_BETA * l_tgt
-    return loss, float(l_traj), float(l_tgt)
+    return loss, l_traj.item(), l_tgt.item()
 
 
 def run_epoch4(model, loader, device, optimizer=None, desc=""):
@@ -106,7 +107,7 @@ def run_epoch4(model, loader, device, optimizer=None, desc=""):
     tot, tot_traj, tot_tgt, n = 0.0, 0.0, 0.0, 0
     preds, targets, masks, logits_all, ids_all = [], [], [], [], []
     n_batches = len(loader)
-    log_every = max(1, n_batches // 20)
+    log_every = max(1, n_batches // 5)
     t_start = time.time()
 
     iterator = tqdm(loader, desc=desc, total=n_batches, leave=False) \
@@ -123,7 +124,7 @@ def run_epoch4(model, loader, device, optimizer=None, desc=""):
                 optimizer.step()
 
             b = batch["target_id"].shape[0]
-            tot += float(loss) * b; tot_traj += lt * b; tot_tgt += lg * b; n += b
+            tot += loss.item() * b; tot_traj += lt * b; tot_tgt += lg * b; n += b
             preds.append(out["pred_future"].detach().cpu().numpy())
             targets.append(batch["future_points"].numpy())
             masks.append(batch["future_mask"].numpy())
@@ -145,24 +146,14 @@ def run_epoch4(model, loader, device, optimizer=None, desc=""):
 
 
 def overfit4(build_model, train_loader, device, steps):
-    print("\n" + "=" * 50)
-    print(f"  Диагностика: overfit-one-batch ({steps} шагов)")
-    print("=" * 50)
-    model = build_model().to(device); model.train()
-    opt = AdamW(model.parameters(), lr=1e-3)
+    """Проверка "сеть способна подогнать малый набор" (см. training/diagnostics.py)."""
     batch = next(iter(train_loader))
-    l0 = None
-    for s in range(steps):
-        out = _forward4(model, batch, device)
-        loss, lt, lg = multitask_loss(out, batch, device)
-        opt.zero_grad(); loss.backward(); opt.step()
-        if s == 0:
-            l0 = float(loss)
-    l1 = float(loss)
-    ok = l1 < 0.1 * l0 or l1 < 1e-2
-    print(f"  loss: {l0:.4f} -> {l1:.4f} (traj={lt:.4f}, target={lg:.4f})")
-    print(f"  [{'OK' if ok else 'FAIL'}] сеть способна подогнать один батч")
-    return {"loss_start": l0, "loss_end": l1, "pass": bool(ok)}
+
+    def step_fn(model, b, dev):
+        loss, _, _ = multitask_loss(_forward4(model, b, dev), b, dev)
+        return loss
+
+    return overfit_check(build_model, step_fn, batch, device, steps)
 
 
 def predict_logits(model, batch_np, device, bs=128):

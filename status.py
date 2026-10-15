@@ -8,6 +8,8 @@ run_all.out и logs/run_all/summary.txt.
 
 Запуск (в папке проекта):
     .venv\\Scripts\\python.exe status.py
+Слежение с автообновлением каждые 30 с (Ctrl+C - выход, цикл не затрагивается):
+    .venv\\Scripts\\python.exe status.py --watch 30
 С рабочего компьютера, без интерактивного входа:
     ssh kirill@26.244.190.10 "cd /d C:\\Users\\kirill\\Desktop\\TATPN_diplom && .venv\\Scripts\\python.exe status.py"
 """
@@ -88,18 +90,13 @@ def gpu_line():
         return "нет данных (nvidia-smi недоступна)"
 
 
-def main():
-    ap = argparse.ArgumentParser(description="Состояние полного цикла run_all.py")
-    ap.add_argument("--out", default=os.path.join(ROOT, "run_all.out"),
-                    help="файл с выводом цикла (по умолчанию run_all.out)")
-    ap.add_argument("--summary", default=os.path.join(ROOT, "logs", "run_all", "summary.txt"))
-    args = ap.parse_args()
+# Признак "наблюдать больше нечего" (цикл завершён или остановился): режим
+# --watch по нему выходит из цикла обновления.
+_STATE = {"done": False}
 
-    try:
-        sys.stdout.reconfigure(errors="replace")
-    except Exception:
-        pass
 
+def show(args) -> int:
+    """Один снимок состояния. Возвращает 0, либо 1, если журнала нет."""
     now = time.time()
     procs = python_processes()
 
@@ -138,8 +135,15 @@ def main():
         if int(n) not in done_nums:
             current = (int(n), script, at)
 
-    # --- эпохи ---
-    epoch_lines = [s for s in segments
+    # --- эпохи: только строки текущего этапа (после его заголовка) ---
+    stage_segments = segments
+    if current:
+        marker = f"ЭТАП {current[0]}:"
+        for idx in range(len(segments) - 1, -1, -1):
+            if marker in segments[idx]:
+                stage_segments = segments[idx:]
+                break
+    epoch_lines = [s for s in stage_segments
                    if re.search(r"\[\s*\d+/\d+\]\s+[\d.]+s\b", s)]
     last_epoch = epoch_lines[-1] if epoch_lines else None
 
@@ -157,6 +161,7 @@ def main():
     print()
 
     if finished and not alive:
+        _STATE["done"] = True
         print("ЦИКЛ ЗАВЕРШЁН. Итог:")
         print("-" * 66)
         with open(args.summary, "r", encoding="utf-8", errors="replace") as f:
@@ -164,6 +169,7 @@ def main():
         return 0
 
     if not alive:
+        _STATE["done"] = True
         print("ВНИМАНИЕ: процесс python не найден, а итога нет. Цикл остановился")
         print("(ошибка этапа, перезагрузка или остановка). Последние строки журнала:")
         print("-" * 66)
@@ -185,7 +191,7 @@ def main():
                   f"закончиться раньше), последняя заняла {m.group(3)} с")
         print("Последняя строка эпохи:")
         print("  " + last_epoch.strip()[:200])
-    es = [s for s in segments if "early stopping" in s]
+    es = [s for s in stage_segments if "early stopping" in s]
     if es and current:
         print("Ранняя остановка:   " + es[-1].strip()[:150])
 
@@ -193,6 +199,37 @@ def main():
         print()
         print("ВНИМАНИЕ: журнал не обновлялся более 30 минут при живом процессе.")
         print("Возможно, обучение зависло - проверить загрузку видеокарты выше.")
+    return 0
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Состояние полного цикла run_all.py")
+    ap.add_argument("--out", default=os.path.join(ROOT, "run_all.out"),
+                    help="файл с выводом цикла (по умолчанию run_all.out)")
+    ap.add_argument("--summary", default=os.path.join(ROOT, "logs", "run_all", "summary.txt"))
+    ap.add_argument("--watch", type=int, default=0, metavar="СЕК",
+                    help="обновлять состояние каждые СЕК секунд, пока цикл не "
+                         "завершится (Ctrl+C - выход)")
+    args = ap.parse_args()
+
+    try:
+        sys.stdout.reconfigure(errors="replace")
+    except Exception:
+        pass
+
+    if args.watch <= 0:
+        return show(args)
+
+    try:
+        while True:
+            os.system("cls" if os.name == "nt" else "clear")
+            code = show(args)
+            if _STATE["done"] or code != 0:
+                break
+            print(f"\n(обновление каждые {args.watch} с, Ctrl+C - выход)")
+            time.sleep(args.watch)
+    except KeyboardInterrupt:
+        print("\nВыход из режима слежения (цикл продолжает работать).")
     return 0
 
 

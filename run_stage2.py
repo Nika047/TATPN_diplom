@@ -32,7 +32,11 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 try:
     from tqdm import tqdm
 
-    HAS_TQDM = True
+    # Прогресс-бар - только в интерактивном терминале. При перенаправлении в
+    # файл (фоновый запуск) tqdm пишет перемешанные символы возврата каретки;
+    # тогда вместо него идут короткие строки прогресса, которые удобно читать
+    # потоком (Get-Content -Wait).
+    HAS_TQDM = sys.stderr.isatty()
 except ImportError:
     HAS_TQDM = False
 
@@ -40,17 +44,21 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
 from data_processing.kinematics import FeatureNormalizer
+from data_processing.splits import load_splits
 from data.windowing import WindowedDataset
 from data.torch_dataset import TorchWindowed
 from models.cnn_baseline import ConvTrajectoryNet
 from training.losses import masked_huber_traj
 from training.gpu_tuning import setup_cuda
+from training.diagnostics import overfit_check
 from eval.metrics import trajectory_metrics
 from eval.logging_utils import Tee, format_metrics_table, save_json, save_summary
 from baselines import constant_position, linear_velocity
 
 STAGE = "stage2_cnn"
-OVERFIT_STEPS = 200
+# 600 шагов по калибровке: на 8 образцах CNN доходит до 0.1% начального loss
+# (200 шагов не хватало: доля 0.25 при пороге 0.2).
+OVERFIT_STEPS = 600
 # Масштаб координат в loss (м). Меньше, чем COORD_SCALE=1000: при ошибках в
 # сотни метров Huber работает в линейном (устойчивом) режиме и даёт здоровые
 # градиенты. Метрики ADE/FDE по-прежнему в метрах.
@@ -73,36 +81,15 @@ LEARN_IMPROVE_RATIO = 0.8
 
 
 def load_split():
-    """Загружает траектории Этапа 0 и восстанавливает train/val/test (seed=42)."""
-    npz_path = os.path.join(config.PROCESSED_DATA_DIR, "all_trajectories.npz")
+    """Загружает траектории Этапа 0 и выборки train/val/test (метки из датасета)."""
     norm_path = os.path.join(config.PROCESSED_DATA_DIR, "normalizer.npz")
-    for p in (npz_path, norm_path):
-        if not os.path.exists(p):
-            raise FileNotFoundError(f"Не найден {p}. Сначала: python run_stage0.py")
+    if not os.path.exists(norm_path):
+        raise FileNotFoundError(f"Не найден {norm_path}. Сначала: python run_stage0.py")
 
-    data = np.load(npz_path, allow_pickle=True)
-    trajectories = data["trajectories"]
-    target_ids = data["target_ids"]
-    n_all = len(trajectories)
-
-    np.random.seed(config.RANDOM_SEED)
-    perm = np.random.permutation(n_all)
-    n_train = int(n_all * config.TRAIN_RATIO)
-    n_val = int(n_all * config.VAL_RATIO)
-    idx = {
-        "train": perm[:n_train],
-        "val": perm[n_train : n_train + n_val],
-        "test": perm[n_train + n_val :],
-    }
-
-    def items(ii):
-        return [
-            {"trajectory": trajectories[i], "target_id": int(target_ids[i])} for i in ii
-        ]
-
+    splits = load_splits()      # без утечки источников (см. data_processing/splits.py)
     normalizer = FeatureNormalizer()
     normalizer.load(norm_path)
-    return items(idx["train"]), items(idx["val"]), items(idx["test"]), normalizer, n_all
+    return splits["train"], splits["val"], splits["test"], normalizer, splits["n_all"]
 
 
 def make_loaders(train_items, val_items, test_items, normalizer):
@@ -152,7 +139,7 @@ def run_epoch(model, loader, device, optimizer=None, desc=""):
     preds, targets, masks = [], [], []
 
     n_batches = len(loader)
-    log_every = max(1, n_batches // 20)  # ~20 отметок прогресса на эпоху
+    log_every = max(1, n_batches // 5)  # ~20 отметок прогресса на эпоху
     t_start = time.time()
 
     iterator = loader
@@ -176,7 +163,7 @@ def run_epoch(model, loader, device, optimizer=None, desc=""):
                 optimizer.step()
 
             b = target.shape[0]
-            total_loss += float(loss) * b
+            total_loss += loss.item() * b
             total_n += b
             preds.append(pred.detach().cpu().numpy())
             targets.append(target.detach().cpu().numpy())
@@ -200,43 +187,17 @@ def run_epoch(model, loader, device, optimizer=None, desc=""):
 
 
 def overfit_one_batch(build_model, train_loader, device, steps=OVERFIT_STEPS):
-    """Подгонка одного батча: loss должен упасть почти в ноль."""
-    print("\n" + "=" * 50)
-    print(f"  Диагностика: overfit-one-batch ({steps} шагов)")
-    print("=" * 50)
-    model = build_model().to(device)
-    model.train()
-    opt = AdamW(model.parameters(), lr=1e-3)
+    """Проверка "сеть способна подогнать малый набор" (см. training/diagnostics.py)."""
     batch = next(iter(train_loader))
-    target = batch["future_points"].to(device)
-    fmask = batch["future_mask"].to(device)
 
-    loss_start = None
-    for step in range(steps):
-        pred = _forward(model, batch, device)
-        loss = masked_huber_traj(pred, target, fmask, scale=LOSS_SCALE)
-        opt.zero_grad()
-        loss.backward()
-        opt.step()
-        if step == 0:
-            loss_start = float(loss)
-    loss_end = float(loss)
-    ade_end = trajectory_metrics(
-        pred.detach().cpu().numpy(), target.cpu().numpy(), fmask.cpu().numpy()
-    )["ADE"]
+    def step_fn(model, b, dev):
+        pred = _forward(model, b, dev)
+        return masked_huber_traj(
+            pred, b["future_points"].to(dev), b["future_mask"].to(dev),
+            scale=LOSS_SCALE,
+        )
 
-    ok = loss_end < 0.1 * loss_start or loss_end < 1e-2
-    print(
-        f"  loss: {loss_start:.4f} -> {loss_end:.4f} за {steps} шагов, "
-        f"ADE на батче = {ade_end:.2f} м"
-    )
-    print(f"  [{'OK' if ok else 'FAIL'}] сеть способна подогнать один батч")
-    return {
-        "loss_start": loss_start,
-        "loss_end": loss_end,
-        "ade_end": ade_end,
-        "pass": bool(ok),
-    }
+    return overfit_check(build_model, step_fn, batch, device, steps)
 
 
 def eval_baselines(test_w, horizon):

@@ -65,25 +65,31 @@ class SelectiveSSM(nn.Module):
 
         dt = F.softplus(self.dt_proj(dt_raw))        # (B, L, d_inner)
 
-        dt_ = dt.unsqueeze(-1)                        # (B, L, d_inner, 1)
-        A_ = A.unsqueeze(0).unsqueeze(0)             # (1, 1, d_inner, d_state)
-        B_ = B_in.unsqueeze(2)                        # (B, L, 1, d_state)
+        # Дискретизация: A_bar = exp(Δ·A), B_bar·x = Δ·B·x.
+        # Тензоры полного размера (B, L, d_inner, d_state) строим один раз.
+        A_bar = torch.exp(dt.unsqueeze(-1) * A)       # (B, L, d_inner, d_state)
+        Bx = (dt * x).unsqueeze(-1) * B_in.unsqueeze(2)   # (B, L, d_inner, d_state)
 
-        A_bar = torch.exp(dt_ * A_)                   # (B, L, d_inner, d_state)
-        # B_bar · x предвычисляем целиком, чтобы в цикле остался один шаг:
-        Bx = (dt_ * B_) * x.unsqueeze(-1)             # (B, L, d_inner, d_state)
+        # Разрезаем по времени ОДИН раз до цикла. Срез A_bar[:, t] внутри цикла
+        # при обратном проходе создаёт на каждом шаге тензор полного размера
+        # (select_backward) и суммирует их: работа растёт как L^2 и на
+        # длине 192 даёт ~5 с на шаг вместо долей секунды. unbind при обратном
+        # проходе делает одну сборку (stack) и стоит линейно.
+        A_steps = A_bar.unbind(dim=1)                 # L тензоров (B, d_inner, d_state)
+        Bx_steps = Bx.unbind(dim=1)
+        C_steps = C_in.unbind(dim=1)                  # L тензоров (B, d_state)
 
-        # Рекуррентность по L (единственный последовательный шаг)
+        # Рекуррентность по L (единственный последовательный шаг).
+        # y_t = sum_n C_t[n] · h_t[..., n] считаем сразу в цикле: так не
+        # нужно хранить стек состояний (B, L, d_inner, d_state).
         h = torch.zeros(B_size, d_inner, self.d_state,
                         device=x.device, dtype=x.dtype)
-        hs = []
+        ys = []
         for t in range(L):
-            h = A_bar[:, t] * h + Bx[:, t]            # (B, d_inner, d_state)
-            hs.append(h)
-        H = torch.stack(hs, dim=1)                    # (B, L, d_inner, d_state)
+            h = A_steps[t] * h + Bx_steps[t]          # (B, d_inner, d_state)
+            ys.append((h * C_steps[t].unsqueeze(1)).sum(dim=-1))   # (B, d_inner)
+        y = torch.stack(ys, dim=1)                    # (B, L, d_inner)
 
-        # y_t = sum_n C_t[n] · h_t[..., n]  - векторизовано по L
-        y = (C_in.unsqueeze(2) * H).sum(dim=-1)       # (B, L, d_inner)
         y = y + x * self.D.unsqueeze(0).unsqueeze(0)  # skip через D
         return y
 

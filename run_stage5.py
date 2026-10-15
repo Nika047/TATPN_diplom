@@ -43,6 +43,7 @@ from data.torch_dataset import TorchWindowed
 from models.tatpn import TATPN
 from training.losses import masked_huber_traj
 from training.gpu_tuning import setup_cuda, tune_batch
+from training.diagnostics import overfit_check
 from eval.metrics import (trajectory_metrics, target_classification_metrics,
                           eta_metrics)
 from eval.logging_utils import (Tee, format_metrics_table, save_json, save_summary)
@@ -62,10 +63,10 @@ TF_START, TF_END = 0.5, 0.0
 
 if str(config.DEVICE) == "cuda":
     SEQ_LEN, BATCH, MAX_EPOCHS, EARLY_STOP_PATIENCE, LR, OVERFIT_STEPS = \
-        192, 64, 100, 12, 1e-3, 300   # BATCH - стартовое, реальное подбирается по VRAM
+        192, 64, 100, 12, 1e-3, 600   # BATCH - стартовое, реальное подбирается по VRAM
 else:
     SEQ_LEN, BATCH, MAX_EPOCHS, EARLY_STOP_PATIENCE, LR, OVERFIT_STEPS = \
-        48, 8, 12, 6, 1e-3, 400
+        48, 8, 12, 6, 1e-3, 600
 
 
 def make_loaders5(train_items, val_items, test_items, normalizer):
@@ -102,7 +103,7 @@ def run_epoch5(model, loader, device, optimizer, tf_ratio, desc=""):
     model.train() if train else model.eval()
     tot = dict(loss=0.0, traj=0.0, tgt=0.0, eta=0.0); n = 0
     preds, targets, masks, logits, ids, eta_p, eta_t = [], [], [], [], [], [], []
-    nb = len(loader); log_every = max(1, nb // 20); t_start = time.time()
+    nb = len(loader); log_every = max(1, nb // 5); t_start = time.time()
     it = tqdm(loader, desc=desc, total=nb, leave=False) if (HAS_TQDM and desc) else loader
     ctx = torch.enable_grad() if train else torch.no_grad()
     with ctx:
@@ -133,22 +134,14 @@ def run_epoch5(model, loader, device, optimizer, tf_ratio, desc=""):
 
 
 def overfit5(build_model, train_loader, device, steps):
-    print("\n" + "=" * 50)
-    print(f"  Диагностика: overfit-one-batch ({steps} шагов, tf=0.5)")
-    print("=" * 50)
-    model = build_model().to(device); model.train()
-    opt = AdamW(model.parameters(), lr=1e-3)
-    batch = next(iter(train_loader)); l0 = None
-    for s in range(steps):
-        out = _forward5(model, batch, device, True, 0.5)
-        loss, lt, lg, le = loss5(out, batch, device)
-        opt.zero_grad(); loss.backward(); opt.step()
-        if s == 0:
-            l0 = loss.item()
-    l1 = loss.item(); ok = l1 < 0.1*l0 or l1 < 1e-2
-    print(f"  loss: {l0:.4f} -> {l1:.4f} (traj={lt:.3f} tgt={lg:.3f} eta={le:.3f})")
-    print(f"  [{'OK' if ok else 'FAIL'}] сеть способна подогнать один батч")
-    return {"loss_start": l0, "loss_end": l1, "pass": bool(ok)}
+    """Проверка "сеть способна подогнать малый набор" (teacher forcing 0.5)."""
+    batch = next(iter(train_loader))
+
+    def step_fn(model, b, dev):
+        loss, _, _, _ = loss5(_forward5(model, b, dev, True, 0.5), b, dev)
+        return loss
+
+    return overfit_check(build_model, step_fn, batch, device, steps)
 
 
 def predict_logits5(model, batch_np, device, bs=128):

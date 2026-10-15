@@ -79,3 +79,6 @@ diplom_intermediate.docx
 # ============================================================================
 .ipynb_checkpoints/
 *.ipynb_checkpoints
+
+# Вывод фоновых запусков (run_all.out, stageN.out)
+*.out

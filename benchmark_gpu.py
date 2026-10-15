@@ -173,9 +173,13 @@ def dataset_sizes(args):
     npz = os.path.join(config.PROCESSED_DATA_DIR, "all_trajectories.npz")
     if os.path.exists(npz):
         try:
-            n = len(np.load(npz, allow_pickle=True)["target_ids"])
-            tr = int(n * config.TRAIN_RATIO)
-            va = int(n * config.VAL_RATIO)
+            data = np.load(npz, allow_pickle=True)
+            n = len(data["target_ids"])
+            if "splits" in data.files:
+                labels = data["splits"]
+                tr, va = int((labels == 0).sum()), int((labels == 1).sum())
+            else:
+                tr, va = int(n * config.TRAIN_RATIO), int(n * config.VAL_RATIO)
             return args.train or tr, args.val or va, f"из датасета ({n} траекторий)"
         except Exception:
             pass

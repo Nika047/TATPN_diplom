@@ -33,6 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
 from data_processing.kinematics import FeatureNormalizer
+from data_processing.splits import load_splits
 from data.windowing import WindowedDataset
 from eval.metrics import trajectory_metrics
 from eval.logging_utils import (Tee, sanity_scale, format_metrics_table,
@@ -51,36 +52,19 @@ BASELINE_SANE_MAX_M = 20000.0
 
 
 def load_dataset():
-    """Загружает траектории Этапа 0 и восстанавливает test-разбиение."""
-    npz_path = os.path.join(config.PROCESSED_DATA_DIR, "all_trajectories.npz")
+    """Загружает траектории Этапа 0 и тестовую выборку (метки из датасета)."""
     norm_path = os.path.join(config.PROCESSED_DATA_DIR, "normalizer.npz")
-    if not os.path.exists(npz_path):
-        raise FileNotFoundError(
-            f"Не найден {npz_path}. Сначала выполните Этап 0: python run_stage0.py")
     if not os.path.exists(norm_path):
         raise FileNotFoundError(
             f"Не найден {norm_path}. Сначала выполните Этап 0: python run_stage0.py")
 
-    data = np.load(npz_path, allow_pickle=True)
-    trajectories = data["trajectories"]
-    target_ids = data["target_ids"]
-    n_all = len(trajectories)
-
-    # Тот же seed и та же логика разбиения, что и в Этапе 0
-    # (data_processing/dataloader.create_dataloaders): гарантирует тот же test.
-    np.random.seed(config.RANDOM_SEED)
-    perm = np.random.permutation(n_all)
-    n_train = int(n_all * config.TRAIN_RATIO)
-    n_val = int(n_all * config.VAL_RATIO)
-    test_idx = perm[n_train + n_val:]
-
-    test_items = [{"trajectory": trajectories[i], "target_id": int(target_ids[i])}
-                  for i in test_idx]
+    splits = load_splits()      # метки выборок хранятся в датасете (см. splits.py)
+    test_items = splits["test"]
 
     normalizer = FeatureNormalizer()
     normalizer.load(norm_path)
 
-    return test_items, normalizer, n_all, len(test_idx)
+    return test_items, normalizer, splits["n_all"], len(test_items)
 
 
 def evaluate_baselines(batch: dict, horizon: int) -> dict:

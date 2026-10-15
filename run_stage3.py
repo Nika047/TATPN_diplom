@@ -60,14 +60,14 @@ if str(config.DEVICE) == "cuda":
     MAX_EPOCHS = 100
     EARLY_STOP_PATIENCE = 12
     LR = 1e-3
-    OVERFIT_STEPS = 300
+    OVERFIT_STEPS = 600
 else:  # cpu
     SEQ_LEN = 48
     BATCH = 8
     MAX_EPOCHS = 12
     EARLY_STOP_PATIENCE = 6
     LR = 1e-3
-    OVERFIT_STEPS = 400
+    OVERFIT_STEPS = 600
 
 
 def make_loaders3(train_items, val_items, test_items, normalizer):

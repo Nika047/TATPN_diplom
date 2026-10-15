@@ -6,7 +6,7 @@ run_stage0.py — Главный скрипт Этапа 0: данные и ин
 2. Вычисление кинематических признаков
 3. Расширение реальных данных (Слой 2)
 4. Генерация синтетических боевых траекторий (Слой 3)
-5. Формирование train/val/test DataLoader-ов
+5. Разбиение на train/val/test по исходным полётам и обучение нормализатора
 6. Сохранение данных и визуализация
 
 Запуск: python run_stage0.py
@@ -26,7 +26,9 @@ from data_processing.kinematics import compute_kinematics
 from data_processing.target_database import TargetDatabase
 from data_processing.generator import TrajectoryGenerator
 from data_processing.augmentor import TrajectoryAugmentor
-from data_processing.dataloader import create_dataloaders, save_dataloaders
+from data_processing.splits import (SPLIT_NAMES, random_labels, split_counts,
+                                    fit_normalizer)
+from data.windowing import WindowedDataset
 
 try:
     from data_processing.visualize_data import generate_html_report
@@ -87,9 +89,14 @@ def main():
     real_trajectories_raw = [r["trajectory"] for r in real_results]
     print(f"\nСлой 1: {len(real_trajectories_raw)} реальных траекторий")
 
+    # Реальные полёты делятся на train/val/test ДО аугментации: расширенные
+    # траектории каждой выборки порождаются только из полётов этой выборки,
+    # поэтому производные от одного полёта не попадают в разные выборки.
+    real_labels = random_labels(len(real_results), seed=config.RANDOM_SEED)
+
     # Назначаем цели для реальных траекторий (по конечной точке)
     layer1_data = []
-    for r in real_results:
+    for r, label in zip(real_results, real_labels):
         traj = r["trajectory"]
         end_x, end_y = traj[-1, 0], traj[-1, 1]
         target_id = target_db.find_nearest_target(end_x, end_y)
@@ -98,6 +105,7 @@ def main():
             "target_id": target_id,
             "trajectory_type": "real",
             "model": r.get("model", "Unknown"),
+            "split": int(label),
         })
 
     # ==================================================================
@@ -107,14 +115,25 @@ def main():
     print("  3. Расширение реальных данных (Слой 2)")
     print("=" * 50)
 
+    layer2_data = []
     if real_trajectories_raw:
-        augmentor = TrajectoryAugmentor(target_db=target_db)
-        layer2_data = augmentor.augment_all(real_trajectories_raw)
+        aug_counts = split_counts(config.AUGMENTED_COUNT)
+        for s, name in enumerate(SPLIT_NAMES):
+            sources = [d["trajectory"] for d in layer1_data if d["split"] == s]
+            print(f"\n--- выборка {name}: {len(sources)} реальных полётов, "
+                  f"нужно {aug_counts[s]} расширенных ---")
+            if not sources:
+                print("[!] В выборке нет реальных полётов - пропуск")
+                continue
+            augmentor = TrajectoryAugmentor(
+                target_db=target_db, seed=config.RANDOM_SEED + 10 * s)
+            for item in augmentor.augment_all(sources, total_count=aug_counts[s]):
+                item["split"] = s
+                layer2_data.append(item)
     else:
         print("[!] Нет реальных данных для расширения")
-        layer2_data = []
 
-    print(f"Слой 2: {len(layer2_data)} расширенных траекторий")
+    print(f"\nСлой 2: {len(layer2_data)} расширенных траекторий")
 
     # ==================================================================
     # 4. Генерация синтетических боевых траекторий (Слой 3)
@@ -125,6 +144,11 @@ def main():
 
     generator = TrajectoryGenerator(target_db=target_db)
     layer3_data = generator.generate_all()
+
+    # Синтетика независима от реальных логов - делим случайно.
+    synth_labels = random_labels(len(layer3_data), seed=config.RANDOM_SEED + 1)
+    for item, label in zip(layer3_data, synth_labels):
+        item["split"] = int(label)
 
     print(f"Слой 3: {len(layer3_data)} синтетических траекторий")
 
@@ -153,21 +177,41 @@ def main():
         print(f"  {tinfo['id']} {tinfo['name']:30s}: {target_counts[tid]} траекторий")
 
     # ==================================================================
-    # 6. Создание DataLoader-ов
+    # 6. Разбиение и нормализатор
     # ==================================================================
     print("\n" + "=" * 50)
-    print("  6. Создание DataLoader-ов")
+    print("  6. Разбиение и нормализатор")
     print("=" * 50)
 
-    train_loader, val_loader, test_loader, normalizer = create_dataloaders(
-        all_trajectories, batch_size=config.BATCH_SIZE
-    )
+    split_labels = np.array([t["split"] for t in all_trajectories], dtype=np.int8)
+    split_sizes = {name: int((split_labels == s).sum())
+                   for s, name in enumerate(SPLIT_NAMES)}
+    print("\nВыборки (по типам траекторий):")
+    kinds = sorted({t.get("trajectory_type", t.get("augmentation_type", "real"))
+                    for t in all_trajectories})
+    print(f"  {'тип':<12}" + "".join(f"{n:>8}" for n in SPLIT_NAMES))
+    for kind in kinds:
+        row = [sum(1 for t in all_trajectories
+                   if t["split"] == s and
+                   t.get("trajectory_type", t.get("augmentation_type", "real")) == kind)
+               for s in range(len(SPLIT_NAMES))]
+        print(f"  {kind:<12}" + "".join(f"{v:>8}" for v in row))
+    print(f"  {'ВСЕГО':<12}" + "".join(f"{split_sizes[n]:>8}" for n in SPLIT_NAMES))
 
-    # Проверка одного батча
-    batch = next(iter(train_loader))
-    print(f"\nПроверка батча:")
-    for key, val in batch.items():
-        print(f"  {key}: shape={val.shape}, dtype={val.dtype}")
+    # Нормализатор - только по обучающей выборке (без утечки статистик).
+    train_trajs = [t["trajectory"] for t in all_trajectories if t["split"] == 0]
+    normalizer = fit_normalizer(train_trajs)
+    print(f"\nНормализатор обучен по {len(train_trajs)} обучающим траекториям")
+
+    # Проверка: окна строятся и имеют ожидаемую форму
+    check = WindowedDataset(
+        [{"trajectory": t["trajectory"], "target_id": t["target_id"]}
+         for t in all_trajectories if t["split"] == 0][:32],
+        normalizer, mode="random")
+    sample = check.make(0)
+    print("\nПроверка окна:")
+    for key in ("observed", "mask", "last_point", "future_points", "future_mask"):
+        print(f"  {key}: shape={np.asarray(sample[key]).shape}")
 
     # ==================================================================
     # 7. Сохранение данных
@@ -191,7 +235,8 @@ def main():
     np.savez(save_path,
              trajectories=np.array(trajectories_arr, dtype=object),
              target_ids=np.array(target_ids),
-             trajectory_types=np.array(traj_types))
+             trajectory_types=np.array(traj_types),
+             splits=split_labels)
     print(f"Данные → {save_path}")
 
     # ==================================================================
@@ -217,8 +262,7 @@ def main():
     print("  Этап 0 завершён за {:.1f} сек".format(elapsed))
     print("  Данные: {} траекторий".format(len(all_trajectories)))
     print("  Train: {} / Val: {} / Test: {}".format(
-          len(train_loader.dataset), len(val_loader.dataset),
-          len(test_loader.dataset)))
+          split_sizes["train"], split_sizes["val"], split_sizes["test"]))
     print("  Отчёт: {}".format(report_path))
     print("=" * 70)
 
