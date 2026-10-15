@@ -489,16 +489,38 @@ SSH, только вместо 192.168.x.x используется этот а�
    При первом подключении спросит про отпечаток ключа - ответить yes, затем
    ввести пароль учётной записи домашнего ПК.
 
-4. Запускать этапы по порядку, как в Части 3. Обучение длится долго, а
-   при обрыве SSH-сессии процесс умирает. Чтобы он пережил разрыв:
+   ВАЖНО: после входа по SSH на Windows открывается командная строка cmd,
+   а не PowerShell. Команды этого приложения (Get-Content, Get-Process и
+   т.п.) работают только в PowerShell, поэтому сразу после входа набрать:
 
-    Start-Process -FilePath ".\.venv\Scripts\python.exe" -ArgumentList "run_stage5.py" -RedirectStandardOutput "stage5.out" -RedirectStandardError "stage5.err" -WindowStyle Hidden
+    powershell
 
-   Следить за ходом:
+4. Запускать этапы по порядку, как в Части 3. Короткие этапы (0-2) можно
+   запускать обычным образом: python run_stage1.py
 
-    Get-Content stage5.out -Wait -Tail 20
+   Долгие этапы (3-5) нужно запускать так, чтобы они не зависели от
+   SSH-сессии: при её закрытии или обрыве обычный запуск и даже
+   Start-Process могут завершиться вместе с ней. Надёжный способ - запуск
+   через WMI, процесс принадлежит системе, а не сессии. Находясь в папке
+   проекта в PowerShell:
 
-   Этапы 0-2 короткие, их можно запускать обычным образом.
+    $P = (Get-Location).Path
+    Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "cmd /c `"cd /d $P && .venv\Scripts\python.exe run_stage5.py > stage5.out 2>&1`"" }
+
+   В ответе должно быть ReturnValue = 0 и номер процесса (ProcessId).
+   Один раз проверьте на коротком этапе, что запущенный так процесс
+   переживает выход из SSH (закрыть сессию, зайти заново, посмотреть
+   Get-Process python).
+
+   Следить за ходом (журнал пишется в logs\run_logs\, берём самый свежий):
+
+    Get-ChildItem logs\run_logs | Sort-Object LastWriteTime -Descending | Select-Object -First 1 -ExpandProperty FullName
+
+   и затем:
+
+    Get-Content ПОЛНЫЙ_ПУТЬ_К_ЖУРНАЛУ -Tail 20 -Wait
+
+   Ежедневный порядок действий - в файле md/DAILY_ROUTINE.md.
 
 -------------------------------------------------------------------------------
 ЕСЛИ НЕ ПОДКЛЮЧАЕТСЯ

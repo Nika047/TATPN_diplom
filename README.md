@@ -180,6 +180,8 @@ deceptive (10%). Подробности - в `md/DATA_STRATEGY.md` и `md/DATASE
 - `md/STAGE0_REPORT.md` - отчёт по Этапу 0.
 - `md/TARGETS_INFO.md` - база целей.
 - `md/ARCHITECTURE_IDEAS.md` - обоснование архитектуры TATPN.
+- `md/DAILY_ROUTINE.md` - ежедневная работа с GPU-компьютером по SSH.
+- `ИНСТРУКЦИЯ_ЗАПУСКА.txt` - перенос на GPU-машину и запуск этапов.
 
 ## Автор
 
