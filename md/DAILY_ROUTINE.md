@@ -98,12 +98,27 @@ $P = (Get-Location).Path
 Invoke-CimMethod -ClassName Win32_Process -MethodName Create -Arguments @{ CommandLine = "cmd /c `"cd /d $P && .venv\Scripts\python.exe -u run_all.py > run_all.out 2>&1`"" }
 ```
 
-Следить и смотреть итог:
+Проверять состояние - одной командой, постоянно следить не нужно. Цикл идёт
+сам, сам останавливается при ошибке и сам пишет итог.
 
-```powershell
-Get-Content run_all.out -Tail 30
-Get-Content logs\run_all\summary.txt
+С рабочего ПК, без входа на домашний (спросит пароль `kirill`):
+
+```text
+ssh kirill@26.244.190.10 "cd /d C:\Users\kirill\Desktop\TATPN_diplom && .venv\Scripts\python.exe status.py"
 ```
+
+Или внутри ssh-сессии, в папке проекта:
+
+```text
+.venv\Scripts\python.exe status.py
+```
+
+Показывает: работает ли процесс, какой этап идёт, эпоху, завершённые этапы
+с временем, загрузку видеокарты, а когда цикл закончился - итог. Если процесса
+нет, а итога нет - пишет, что цикл остановился, и показывает последние
+строки журнала.
+
+Достаточно заглядывать на границах этапов, а не по минутам.
 
 Продолжить с места остановки: `--from N` (например, `run_all.py --from 3`).
 
