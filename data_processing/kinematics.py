@@ -1,6 +1,8 @@
 """
 kinematics.py — Вычисление кинематических признаков из траектории (x, y, z, dt).
 
+ПРИЧИННОСТЬ: признаки точки i зависят только от точек 0..i (см. compute_kinematics).
+
 Из 4 базовых координат вычисляет 11 дополнительных признаков:
   vx, vy, vz    — компоненты скорости (м/с)
   |v|            — модуль скорости (м/с)
@@ -21,114 +23,99 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import config
 
 
+def _causal_mean(arr: np.ndarray, window: int, start: int = 0) -> np.ndarray:
+    """
+    Скользящее среднее по последним `window` значениям (причинное).
+
+    Значение в точке i зависит только от arr[start:i+1], в начале окно
+    сжимается. Элементы до `start` не учитываются и остаются нулями.
+    """
+    out = np.zeros(len(arr), dtype=np.float64)
+    seg = np.asarray(arr[start:], dtype=np.float64)
+    if seg.size == 0:
+        return out
+    if window <= 1:
+        out[start:] = seg
+        return out
+    cum = np.concatenate([[0.0], np.cumsum(seg)])
+    idx = np.arange(1, seg.size + 1)
+    lo = np.maximum(idx - window, 0)
+    out[start:] = (cum[idx] - cum[lo]) / (idx - lo)
+    return out
+
+
 def compute_kinematics(trajectory: np.ndarray,
                        smoothing_window: int = config.SMOOTHING_WINDOW
                        ) -> np.ndarray:
     """
-    Вычисляет кинематические признаки для траектории.
+    Вычисляет кинематические признаки для траектории (ПРИЧИННО).
+
+    Признаки точки i зависят только от точек 0..i. Это обязательное условие:
+    система в момент i знает только прошлое, а признаки считаются один раз по
+    всей траектории и затем режутся на окна. Любая центральная разность или
+    симметричное сглаживание подмешали бы в последние наблюдаемые точки
+    информацию о будущих (раньше так и было: затрагивались 5 последних точек).
+
+    Скорость - разность назад (p[i] - p[i-1]) / dt, затем причинное сглаживание
+    по последним `smoothing_window` значениям. Ускорение - разность назад
+    сглаженной скорости. В первой точке скорость неизвестна (0), ускорение и
+    скорость поворота определены с третьей точки.
 
     Args:
-        trajectory: (N, 4) массив [x, y, z, dt]
-        smoothing_window: размер окна сглаживания
+        trajectory: (N, 4) массив [x, y, z, dt], dt - время от начала, с
+        smoothing_window: размер причинного окна сглаживания
 
     Returns:
         (N, 15) массив [x, y, z, dt, vx, vy, vz, |v|, ax, ay, az,
                          heading, climb_angle, curvature, heading_rate]
     """
-    N = trajectory.shape[0]
-    x = trajectory[:, 0]
-    y = trajectory[:, 1]
-    z = trajectory[:, 2]
-    dt = trajectory[:, 3]
+    traj = np.asarray(trajectory, dtype=np.float64)
+    N = traj.shape[0]
+    x, y, z, t = traj[:, 0], traj[:, 1], traj[:, 2], traj[:, 3]
 
-    # Вычисляем промежутки времени между точками
-    delta_t = np.diff(dt)
-    delta_t = np.maximum(delta_t, 1e-6)  # Защита от деления на 0
+    feats = np.zeros((N, 15), dtype=np.float64)
+    feats[:, 0], feats[:, 1], feats[:, 2], feats[:, 3] = x, y, z, t
+    if N < 2:
+        return feats.astype(np.float32)
 
-    # === Скорости (центральные разности для внутренних точек) ===
-    vx = np.zeros(N, dtype=np.float32)
-    vy = np.zeros(N, dtype=np.float32)
-    vz = np.zeros(N, dtype=np.float32)
+    step = np.maximum(np.diff(t), 1e-6)                 # step[i-1] = t[i] - t[i-1]
 
-    # Внутренние точки: центральная разность
+    # Скорость: разность назад, затем причинное сглаживание
+    v = np.zeros((N, 3))
+    v[1:, 0] = np.diff(x) / step
+    v[1:, 1] = np.diff(y) / step
+    v[1:, 2] = np.diff(z) / step
+    for j in range(3):
+        v[:, j] = _causal_mean(v[:, j], smoothing_window, start=1)
+    vx, vy, vz = v[:, 0], v[:, 1], v[:, 2]
+    speed = np.sqrt(vx ** 2 + vy ** 2 + vz ** 2)
+
+    # Ускорение: разность назад сглаженной скорости (с третьей точки)
+    a = np.zeros((N, 3))
     if N > 2:
-        dt_central = dt[2:] - dt[:-2]
-        dt_central = np.maximum(dt_central, 1e-6)
-        vx[1:-1] = (x[2:] - x[:-2]) / dt_central
-        vy[1:-1] = (y[2:] - y[:-2]) / dt_central
-        vz[1:-1] = (z[2:] - z[:-2]) / dt_central
+        a[2:] = (v[2:] - v[1:-1]) / step[1:, None]
+    ax, ay, az = a[:, 0], a[:, 1], a[:, 2]
 
-    # Граничные точки: односторонние разности
-    if N > 1:
-        vx[0] = (x[1] - x[0]) / delta_t[0]
-        vy[0] = (y[1] - y[0]) / delta_t[0]
-        vz[0] = (z[1] - z[0]) / delta_t[0]
-        vx[-1] = (x[-1] - x[-2]) / delta_t[-1]
-        vy[-1] = (y[-1] - y[-2]) / delta_t[-1]
-        vz[-1] = (z[-1] - z[-2]) / delta_t[-1]
+    # Курс (0 = север, по часовой), угол набора высоты
+    heading = np.arctan2(vx, vy)
+    horizontal = np.hypot(vx, vy)
+    climb_angle = np.arctan2(vz, np.maximum(horizontal, 1e-6))
 
-    # Сглаживание скоростей
-    if smoothing_window > 1 and N > smoothing_window:
-        vx = _moving_average(vx, smoothing_window)
-        vy = _moving_average(vy, smoothing_window)
-        vz = _moving_average(vz, smoothing_window)
-
-    # Модуль скорости
-    speed = np.sqrt(vx**2 + vy**2 + vz**2)
-
-    # === Ускорения ===
-    ax = np.zeros(N, dtype=np.float32)
-    ay = np.zeros(N, dtype=np.float32)
-    az = np.zeros(N, dtype=np.float32)
-
-    if N > 2:
-        dt_central = dt[2:] - dt[:-2]
-        dt_central = np.maximum(dt_central, 1e-6)
-        ax[1:-1] = (vx[2:] - vx[:-2]) / dt_central
-        ay[1:-1] = (vy[2:] - vy[:-2]) / dt_central
-        az[1:-1] = (vz[2:] - vz[:-2]) / dt_central
-
-    if N > 1:
-        ax[0] = ax[1] if N > 1 else 0
-        ay[0] = ay[1] if N > 1 else 0
-        az[0] = az[1] if N > 1 else 0
-        ax[-1] = ax[-2]
-        ay[-1] = ay[-2]
-        az[-1] = az[-2]
-
-    # === Курс (heading) ===
-    # atan2(east_velocity, north_velocity) → 0=North, CW
-    heading = np.arctan2(vx, vy)  # x=East, y=North
-
-    # === Угол набора высоты (climb angle) ===
-    horizontal_speed = np.sqrt(vx**2 + vy**2)
-    horizontal_speed_safe = np.maximum(horizontal_speed, 1e-6)
-    climb_angle = np.arctan2(vz, horizontal_speed_safe)
-
-    # === Кривизна траектории ===
     curvature = _compute_curvature(vx, vy, ax, ay)
 
-    # === Скорость изменения курса (heading rate) ===
-    heading_rate = np.zeros(N, dtype=np.float32)
+    # Скорость изменения курса (с третьей точки), с обработкой перехода через ±pi
+    heading_rate = np.zeros(N)
     if N > 2:
         dh = np.diff(heading)
-        # Обработка перехода через ±pi
         dh = (dh + np.pi) % (2 * np.pi) - np.pi
-        heading_rate[1:] = dh / delta_t
-        # Сглаживание
-        if smoothing_window > 1 and N > smoothing_window:
-            heading_rate = _moving_average(heading_rate, smoothing_window)
+        heading_rate[2:] = dh[1:] / step[1:]
+    heading_rate = _causal_mean(heading_rate, smoothing_window, start=2)
 
-    # Собираем все признаки: (N, 15)
-    features = np.stack([
-        x, y, z, dt,                    # 0-3:  базовые координаты
-        vx, vy, vz, speed,              # 4-7:  скорости
-        ax, ay, az,                      # 8-10: ускорения
-        heading, climb_angle,            # 11-12: углы
-        curvature, heading_rate,         # 13-14: кривизна и поворот
-    ], axis=1).astype(np.float32)
-
-    return features
+    feats[:, 4], feats[:, 5], feats[:, 6], feats[:, 7] = vx, vy, vz, speed
+    feats[:, 8], feats[:, 9], feats[:, 10] = ax, ay, az
+    feats[:, 11], feats[:, 12] = heading, climb_angle
+    feats[:, 13], feats[:, 14] = curvature, heading_rate
+    return feats.astype(np.float32)
 
 
 def _compute_curvature(vx: np.ndarray, vy: np.ndarray,
@@ -146,17 +133,6 @@ def _compute_curvature(vx: np.ndarray, vy: np.ndarray,
     curvature = np.clip(curvature, 0, 1.0)
 
     return curvature.astype(np.float32)
-
-
-def _moving_average(arr: np.ndarray, window: int) -> np.ndarray:
-    """Скользящее среднее с сохранением длины массива."""
-    if window <= 1 or len(arr) < window:
-        return arr
-
-    kernel = np.ones(window) / window
-    smoothed = np.convolve(arr, kernel, mode='same')
-
-    return smoothed.astype(arr.dtype)
 
 
 # ============================================================================
